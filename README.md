@@ -6,7 +6,7 @@ Socket activation has been a feature of *NIX type operating systems for many yea
 
 The biggest issue with inetd is that one a service has been started, then it will continue to run indefinitely, meaning that resources would not be reclaimed until a reboot, or if e.g. shut down via a timed script.  Systemd allows for time based inactivation of the process.  However, the problem with these is that they may shut down when clients are accessing the service.  This can be a problem if a service is needed only on occasion but once started may be required to do an indeterminate amount of work, meaning that services are unintelligently terminated while they are still required.  Furthermore, there is no ability to only activate the service when specific IP addresses access the service, or to e.g. filter IP addresses which can prevent service shutdown. 
 
-Mr Socko allows for much more sophisticated control is a lightweight with no dependency requiremenets beyond Python. It has been tested on severely resource depleted systems such as the rasperry pi zero and has very low overhead.
+Mr Socko solves these issues, allowing for services to be gracefully started and shut down only when they are not needed.  Furthermore, it is lightweight with no dependency requiremenets beyond the standard Python libraries. It has been tested on severely resource depleted systems such as the rasperry pi zero and has very low overhead.
 
 ## Features
 - Time based socket inactivation
