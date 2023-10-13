@@ -1,7 +1,7 @@
 # mrsocko
 The sophisticated socket activation tool, with client activity awareness and other features such as IP filtering and more.
 
-## Why use socket activation, and why use mr socko? 
+## Why use socket activation, and why use mrsocko? 
 Socket activation has been a feature of *NIX type operating systems for many years, traditionally managed by inetd, and later by systemd in more modern systems.  This allows for functions to only be started on demand thereby saving system resources when they are not needed. 
 
 The biggest issue with inetd and systemd for this purpose is that one a service has been started, then it will continue to run indefinitely with no awareness of what is going on.  Traditionally shutdown would occur via some timer, which can mean that the service will close down in the middle of activity or when providing services to clients, and there is no granularity over which IP addresses can activate the service.
