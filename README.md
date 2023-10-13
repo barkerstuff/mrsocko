@@ -27,9 +27,9 @@ Alternatively clone this repositority and run ./mrsocko
 No dependencies are required outside of Python 3.
 See systemd.conf for examples of systemd service configurations.
 
-'git clone https://github.com/barkerstuff/mrsocko'
-'cd mrsocko'
-'./mrsocko'
+'git clone https://github.com/barkerstuff/mrsocko
+cd mrsocko
+./mrsocko'
 
 To install system wide run ./install.sh
 
