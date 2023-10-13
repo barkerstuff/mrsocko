@@ -30,10 +30,10 @@ See systemd.conf for examples of systemd service configurations.
 ```
 git clone https://github.com/barkerstuff/mrsocko
 cd mrsocko
-/mrsocko
+./mrsocko
 ```
 
-To install system wide run ./install.sh
+*To install system wide run ./install.sh*
 
 ## Roadmap
 - BSD support (not tested) 
