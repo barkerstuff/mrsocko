@@ -33,7 +33,7 @@ cd mrsocko
 ./mrsocko
 ```
 
-*To install system wide run ./install.sh*
+*To install system wide run ./install.py*
 
 ## Roadmap
 - BSD support (not tested) 
