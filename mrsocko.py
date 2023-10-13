@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+
+# MrSocko - Socket activation manager
+# Copyright (C) 2023 Jason Barker
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+import socket
+import subprocess
+import argparse
+from psutil import Process
+from psutil import NoSuchProcess
+from datetime import datetime
+from time import sleep
+from time import time
+from sys import exit
+from re import findall
+from os import path
+from os import getpid
+from os import getuid
+from os import kill
+from os import mkdir
+from os import sep
+from shutil import which
+from signal import SIGTERM
+from signal import SIGKILL
+import logging
+from logging.handlers import RotatingFileHandler
+
+parser = argparse.ArgumentParser(description='Socket activation helper with automatic shutdown based on time and client activity parameters. Copyright under GPLv2 Jason Barker 2023.')
+parser.set_defaults(termwait=240, refresh=60, clientwaitmins=30)
+parser.add_argument('-l', '--listen', required=True, type=str, help="IP to listen on.")
+parser.add_argument('-p', '--port', required=True, type=int, help="Port to listen on.")
+parser.add_argument('-e', '--exec', required=True, type=str, help="Executable to call when socket is activated.'")
+parser.add_argument('-u', '--udp', action='store_true', help="Bind a UDP rather than TCP socket.")
+parser.add_argument('-m', '--maxrunmins', type=int, help="Run for maximum of x minutes before shutting the process down again and rebinding the socket for reactivation.")
+parser.add_argument('-r', '--refresh', type=int, help="Recheck for the running process at the specified frequency.  Defaults to 60 seconds.")
+parser.add_argument('-c', '--noclientexit', action='store_true', help="If a maximum runtime is specified then do not shut down if clients are connected to the service. Requires root permissions in order to monitor process.")
+parser.add_argument('-R', '--clientrefresh', action='store_true', help="Reset the maximum run time counter whenever a client accesses the service")
+parser.add_argument('-S', '--ipfilter', type=str, nargs="*", help="If specified then the given partial IP ranges specified here will be the only ones counted for --noclient exit.  Useful to ensure only LAN or VPN range clients can prevent automatic shutdown.\nProvide the range in the format of a partial string, i.e. 192.168. will only count clients with 192.168.0.0/16 subnet mask. and 192.168.1. will correspond to 192.168.0.0/24 subnet mask")
+parser.add_argument('-C', '--clientwaitmins', type=int, help="Wait x minutes until beyond the time of last client usage.  Requires --noclientexit and --maxrunmins. Defaults to 10 minutes.")
+parser.add_argument('-W', '--termwait', type=int, help="Seconds to wait before considering a SIGTERM to not be working to politely kill a process. After this time elapses, a SIGKILL will be sent. Defaults to 240 seconds.")
+parser.add_argument('-v', '--verbose', action='store_true')
+parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output of child processes.')
+parser.add_argument('-U', '--user', type=str, help='Run subprocess as an alternative user.')
+parser.add_argument('-F', '--forking', action='store_true', help='Finds a process by port rather than trust that the subprocess will be the monitored program. Use this for forking processes, docker/LXC etc.')
+parser.add_argument('-E', '--stopexec', type=str, help='Supply a custom shutdown script rather than kill spawned subprocess.')
+args = parser.parse_args()
+
+# Shared dict for client access times
+global clientData; global deltadict
+clientData = {}; deltadict = {}
+
+# Logging setup
+if getuid() == 0:
+    logpath = '/var/log/mrsocko'
+else:
+    logpath = path.expanduser('~') + sep + '.local' + sep + 'share' + sep + 'mrsocko'
+if not path.isdir(logpath): mkdir(logpath)
+
+logger = logging.getLogger('mrsocko')
+logger.setLevel(logging.INFO)
+logformatter = logging.Formatter('%(asctime)s - %(message)s')
+loghandler = RotatingFileHandler(logpath+sep+'mrsocko.log', maxBytes=400000, backupCount=10)
+loghandler.setFormatter(logformatter)
+logger.addHandler(loghandler)
+
+
+#if args.noclientexit and getuid() != 0:
+#    exit('The client wait option requires root privileges for process monitoring. Exiting.')
+
+def validateIP(address):
+    try:
+        host_bytes = address.split('.')
+        valid = [int(b) for b in host_bytes]
+        valid = [b for b in valid if b >= 0 and b<=255]
+        return len(host_bytes) == 4 and len(valid) == 4
+    except:
+        return False
+
+# Validation
+if args.port < 1 or args.port > 65535:
+    exit('Please specify a valid port range, i.e. between 1-65535')
+if not validateIP(args.listen):
+    exit('Please specify a valid IPv4 address.')
+if args.maxrunmins == 0:
+    exit('Please specify a positive integer for the --maxrunmins argument.')
+if args.refresh == 0:
+    exit('Please specify a positive integer for the --refresh argument.')
+if args.clientwaitmins == 0:
+    exit('Please specify a positive integer for the --clientwaitmins argument.')
+if args.clientrefresh:
+    # Need to just set a sane default if using the client refresh option, but won't be honored
+    args.maxrunmins = 30; args.noclientexit = True
+if not path.isfile(args.exec):
+    exit('{} is not a valid executable!'.format(args.exec))
+if args.stopexec:
+    if not path.isfile(args.stopexec):
+        exit('{} is not a valid executable!'.format(args.exec))
+if args.forking and not which('lsof'):
+    exit('lsof is required for the port to process lookup function to work. Please install this.')
+if args.user:
+    exit('Not implemented yet. HINT FOR SELF: use the new keyword user= argument for the subprocess call!')
+
+# Stored to allow switching back to original UID post subprocess launch
+oguid = getuid()
+
+def logPrint(level, message):
+    logmessage = '{}:{} - {}'.format(args.exec, level.upper(), message).replace('/n', '')
+    print(message)
+    if level == 'info':
+        logger.info(logmessage)
+    elif level == 'warning':
+        logger.warning(logmessage)
+    elif level == 'error':
+        logger.error(logmessage)
+    elif level == 'fatal':
+        logger.fatal(logmessage)
+
+def bindSocketTCP():
+    global starttime
+
+    if not args.ipfilter:
+        activate = True
+    else:
+        activate = False
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((args.listen, args.port))
+            s.listen()
+            conn, addr = s.accept()
+            with conn:
+                print(f"Connected by {addr}")
+                logger.info(f"{args.exec}:INFO - Connected by {addr}")
+
+                # IP filter
+                if args.ipfilter:
+                    for iprange in args.ipfilter:
+                        if iprange in addr[0]:
+                            activate = True
+
+            if not activate:
+                logPrint('info', 'Not activating socket as ip address is not in whitelist.')
+                s.close(); sleep(3); bindSocketTCP()
+
+            if args.verbose: print('Closing socket on port {} to allow the executable to launch..'.format(args.port))
+            s.close(); sleep(3)
+            p = callExec(); sleep(10)
+            success = True
+            starttime = time()
+            return success, p
+        except socket.error as E:
+            if 'in use' in str(E).lower():
+                logPrint('fatal', E)
+                exit('Please kill any leftover mrsocko processes, or kill the executable that it calls, or any other processes that use this port')
+            elif 'cannot assign' in str(E).lower():
+                logPrint('fatal', E)
+                exit('Please recheck the IP address argument as this appears to not be valid. Does an interface exist with this address?')
+            success = False
+            return success, None, None
+
+def reversePIDSearch(port, mode):
+    ''' Finds a PID from a given port. Needed when processes fork / docker exec etc '''
+    if mode == 'tcp':
+        subprocess_list = ['lsof', '-P', '-i', ':{}'.format(port), '-s', 'TCP:LISTEN']
+    elif mode == 'udp':
+        subprocess_list = ['lsof', '-P', '-i', ':{}'.format(port)]
+    if args.verbose: print('Calling {}'.format(" ".join(subprocess_list)))
+
+    try:
+        output = subprocess.check_output(subprocess_list, text=True).split('\n')
+    except ChildProcessError as E:
+        output = ''
+        logPrint('error', 'Failed to find process ID via lsof.  Did the service inadvertently exit?')
+    finally:
+        if args.verbose: print('lsof output:\n{}'.format("\n".join(output)))
+
+    def extractTCP(output):
+        if args.verbose: print('Extracting process for TCP port {} from subprocess lsof output...'.format(port))
+        for line in output:
+            if 'LISTEN' in line and str(port) in line:
+                pid = int(line.split()[1])
+        return pid
+
+    def extractUDP(output):
+        if args.verbose: print('Extracting process for UDP port {} from subprocess lsof output...'.format(port))
+        for line in output:
+            if str(port) in line:
+                pid = int(line.split()[1])
+        return pid
+
+    if mode == 'tcp':
+        pid = extractTCP(output)
+    else:
+        pid = extractTCP(output)
+    return pid
+
+def getClients(pid):
+    p = Process(pid)
+    clients = []
+    for connection in p.connections():
+        raddr = str(connection.raddr)
+        ips = findall(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}', raddr)
+        if len(ips) > 0:
+            for ip in ips:
+                clients.append(ip)
+    clients = list(set(clients))
+    #if len(clients) > 0:
+    #    print('\nCurrent clients: {}'.format("\n".join(clients)))
+    return clients
+
+def bindSocketUDP():
+    global start
+    if not args.ipfilter:
+        activate = True
+    else:
+        activate = False
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.bind((args.listen, args.port))
+            data, addr = s.recvfrom(1024)
+            logPrint('info', "Connected by {}".format(addr))
+
+            # IP filter
+            if args.ipfilter:
+                for iprange in args.ipfilter:
+                    if iprange in addr[0]:
+                        activate = True
+
+            if not activate:
+                logPrint('info', 'Not activating socket as ip address is not in whitelist.')
+                s.close(); sleep(3); bindSocketUDP()
+
+            if args.verbose: print('Closing socket on port {} to allow the executable to launch..'.format(args.port))
+            s.close(); sleep(5)
+            p = callExec(); sleep(10)
+            success = True
+            starttime = time()
+            exit('Socket bound...')
+            return success, p
+
+        except socket.error as E:
+            if 'in use' in str(E).lower():
+                logPrint('fatal', E)
+                exit('Please kill any leftover mrsocko processes, or kill the executable that it calls, or any other processes that use this port')
+            elif 'cannot assign' in str(E).lower():
+                logPrint('fatal', E)
+                exit('Please recheck the IP address argument as this appears to not be valid. Does an interface exist with this address?')
+            success = False
+            return success, None, None
+
+def callExec():
+    def change(user_uid):
+            from pwd import getpwnam
+            uid = getpwnam(args.user).pw_uid
+            os.setuid(uid)
+
+    execs = args.exec.split(' ')
+    logPrint('info', 'Calling {}'.format(" ".join(execs)))
+    try:
+        if args.quiet:
+            if not args.user:
+                p = subprocess.Popen(execs, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            else:
+                p = subprocess.Popen(execs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=change(args.user))
+            sleep(20)
+        else:
+            if not args.user:
+                p = subprocess.Popen(execs)
+            else:
+                p = subprocess.Popen(execs, preexec_fn=change(args.user))
+
+            sleep(20)
+    except ChildProcessError as E:
+        exit('Error launching executable! Please ensure this runs normally outside of the script!\n{}'.format(E))
+
+    if args.user:
+        os.setuid(oguid)
+
+    return p
+
+def killProcess(pid):
+    # This is the variable that tracks start of the kill sequence to monitor shutdown. NOT the service start!
+    start = time()
+
+    if not args.stopexec:
+        p = Process(pid)
+        logPrint('info', 'Sending polite termination signal to process {}.. (SIGTERM)'.format(pid))
+        kill(pid, SIGTERM)
+        try:
+            while True:
+                status = p.status()
+                if args.verbose: logPrint('info', 'Current process status: {}'.format(status))
+                if status == 'zombie' or status == 'dead':
+                    break
+                now = time()
+                delta = round(start - now)
+                if delta > args.termwait:
+                    logPrint('info', 'Sending SIGKILL to forcefully kill the process.')
+                    kill(pid, SIGKILL)
+                sleep(2)
+        except NoSuchProcess:
+            logPrint('info', 'Process terminated.')
+            sleep(5)
+        except Exception as E:
+            logPrint('fatal', E)
+
+    elif not args.stopexec:
+        try:
+            subprocess.call([args.stopexec])
+            logPrint('info', 'Shutdown process called...\nSleeping for {} seconds'.format(args.refresh))
+        except ChildProcessError as E:
+            logPrint('fatal', 'Call to shut down service failed!\n{}'.format(E))
+
+def isRunning(process):
+    p = Process(process)
+    try:
+        status = p.status()
+        if args.verbose: logPrint('info', 'Child process status: {}'.format(status))
+        if status == 'zombie' or status == 'dead':
+            return False
+        else:
+            return True
+    except:
+        return False
+
+def isSafeToShutDown(clients):
+    global clientData
+    global deltadict
+    global starttime
+
+    def printClientData(deltadict):
+        if len(deltadict) > 0:
+            print('\nClient list: ')
+            for entry in deltadict.keys():
+                logPrint('info', 'Client: {} Last seen {} seconds ago'.format(entry, deltadict[entry]))
+            if args.noclientexit:
+                if args.clientrefresh:
+                    if args.verbose: logPrint('info', 'Operating in client refresh mode. Max run time reset.')
+                else:
+                    if args.verbose: print('Process will exit {} minutes after last client has connected.\n'.format(args.clientwaitmins))
+
+    if not args.noclientexit:
+        return True
+
+    # Update client to show last time accessed
+    # Now check to compare access times
+    curtime = datetime.now()
+    if len(clients) > 0:
+        # Update entries
+        for client in clients:
+            if args.ipfilter:
+                for subnet in args.ipfilter:
+                    if subnet in client:
+                        clientData[client] = curtime
+            else:
+                clientData[client] = curtime
+
+    # Process entries to check time deltas
+    for entry in clientData.keys():
+        deltatime = curtime - clientData[entry]
+        deltadict[entry] = deltatime.seconds
+    printClientData(deltadict)
+
+    for entry in deltadict.keys():
+        if deltadict[entry] / 60 < args.clientwaitmins:
+            # Reset counter
+            if args.clientrefresh:
+                starttime = time()
+            return False
+    return True
+
+def main():
+
+    def Loop(mode):
+        global pid, starttime
+        if mode == 'tcp':
+            logPrint('info', 'Waiting for TCP connections on {} port {}'.format(args.listen, args.port))
+        elif mode == 'udp':
+            logPrint('info', 'Waiting for UDP connections on {} port {}'.format(args.listen, args.port))
+
+        if args.maxrunmins and not args.clientrefresh: print('Child service will shut down {} minutes after launch'.format(args.maxrunmins))
+        success = False
+
+        while True:
+            while not success:
+                if mode == 'tcp':
+                    success, p = bindSocketTCP()
+                elif mode == 'udp':
+                    success, p = bindSocketUDP()
+
+                if not args.forking:
+                    # Simple subprocess follow
+                    pid = p.pid
+                elif args.forking:
+                    # Reverse port to process id lookup
+                    pid = reversePIDSearch(args.port, mode)
+
+                if args.verbose: logPrint('info', 'Child process PID: {}'.format(pid))
+                if not success:
+                    logPrint('warning', 'Waiting to retry binding socket...')
+                    sleep(args.refresh)
+            logPrint('info', 'Process successfully launched...')
+
+            while isRunning(pid):
+                if args.verbose: print('Process still running..')
+                # Client related stuff
+                if args.noclientexit:
+                    clients = getClients(pid)
+                else:
+                    clients = []
+                # Just to print only
+                isSafeToShutDown(clients)
+                # Maxruntime related stuff
+                now = time()
+                elapsed = round(now - starttime)
+                if args.verbose: print('Current runtime length: {} minutes\nMaximum permitted length: {} minutes'.format(round(elapsed/60), round(args.maxrunmins)))
+                if args.maxrunmins:
+                    if elapsed/60 > args.maxrunmins:
+                        logPrint('info', 'Maximum runtime of {} minutes have exceeded the permitted runtime of {} minutes.'.format(round(elapsed/60), args.maxrunmins))
+                        if isSafeToShutDown(clients):
+                            killProcess(pid)
+                            pid = ''
+                            logPrint('info', 'Waiting before rebinding socket for activation.')
+                            sleep(60)
+                            Loop(mode)
+                        else:
+                            if args.verbose: print('Not safe to shut down due to clients!')
+
+                sleep(args.refresh)
+            break
+
+    if not args.udp:
+        while True:
+            Loop('tcp')
+    if args.udp:
+        while True:
+            Loop('udp')
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        try:
+            if 'pid' in globals():
+                if isinstance(pid, int):
+                    logPrint('warning', 'Caught interrupt... sending SIGTERM to {}'.format(pid))
+                    kill(pid, SIGTERM)
+                    starttime = time()
+                    while isRunning(pid):
+                        curtime = time()
+                        tdelta = curtime - starttime
+                        if round(tdelta) > args.termwait:
+                            logPrint('error', 'Waited too long for process to clean up. Sending kill signal.')
+                            if not args.stopexec:
+                                kill(pid, SIGKILL)
+                                sleep(5)
+                                logPrint('error', 'Process successfully terminated via generic signal.')
+                            else:
+                                kill(pid, SIGKILL)
+                                sleep(5)
+                                logPrint('error', 'Process terminated via stopexec')
+                                subprocess.call([args.stopexec])
+
+        except Exception as E:
+            logPrint('error', E)
+
