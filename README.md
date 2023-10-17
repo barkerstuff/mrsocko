@@ -33,7 +33,12 @@ cd mrsocko
 ./mrsocko
 ```
 
-*To install system wide run ./install.py*
+```
+# Optional
+sudo ./install.py
+```
+
+*To install system wide run ./install.py as root*
 
 ## Roadmap
 - BSD support (not tested) 

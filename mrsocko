@@ -319,7 +319,7 @@ def killProcess(pid):
         except Exception as E:
             logPrint('fatal', E)
 
-    elif not args.stopexec:
+    elif args.stopexec:
         try:
             subprocess.call([args.stopexec])
             logPrint('info', 'Shutdown process called...\nSleeping for {} seconds'.format(args.refresh))
