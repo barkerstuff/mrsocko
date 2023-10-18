@@ -73,7 +73,8 @@ if not path.isdir(logpath): mkdir(logpath)
 logger = logging.getLogger('mrsocko')
 logger.setLevel(logging.INFO)
 logformatter = logging.Formatter('%(asctime)s - %(message)s')
-loghandler = RotatingFileHandler(logpath+sep+'mrsocko.log', maxBytes=400000, backupCount=10)
+logbase = path.splitext(path.basename(args.exec))[0]
+loghandler = RotatingFileHandler(logpath+sep+logbase, maxBytes=400000, backupCount=10)
 loghandler.setFormatter(logformatter)
 logger.addHandler(loghandler)
 
