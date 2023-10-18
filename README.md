@@ -1,4 +1,4 @@
-# mrsocko
+.# mrsocko
 The sophisticated socket activation tool, with client activity awareness and other features such as IP filtering and more.
 
 ## Why use socket activation, and why use mrsocko? 
@@ -24,7 +24,7 @@ Mr Socko solves these issues, allowing for services to be gracefully started and
 ## Installation
 Installation is very simple.  Either download the main executable and chmod u+x and run mrsocko. 
 Alternatively clone this repositority and run ./mrsocko
-No dependencies are required outside of Python 3.
+No dependencies beyond Python version 3.6 or higher.
 See systemd.conf for examples of systemd service configurations.
 
 ```
