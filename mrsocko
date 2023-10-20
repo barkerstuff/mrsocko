@@ -393,8 +393,9 @@ def main():
             logPrint('info', 'Waiting for TCP connections on {} port {}'.format(args.listen, args.port))
         elif mode == 'udp':
             logPrint('info', 'Waiting for UDP connections on {} port {}'.format(args.listen, args.port))
-
+        if args.maxrunmins: logPrint('info', 'Timeout will occur after {} mins.'.format(args.maxrunmin))
         if args.maxrunmins and not args.clientrefresh: print('Child service will shut down {} minutes after launch'.format(args.maxrunmins))
+
         success = False
 
         while True:
