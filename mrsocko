@@ -105,10 +105,10 @@ if args.clientwaitmins == 0:
 if args.clientrefresh:
     # Need to just set a sane default if using the client refresh option, but won't be honored
     args.maxrunmins = 30; args.noclientexit = True
-if not path.isfile(args.exec.split()[0]):
+if not which(args.exec.split()[0]):
     exit('{} is not a valid executable!'.format(args.exec.split()[0]))
 if args.stopexec:
-    if not path.isfile(args.stopexec.split()[0]):
+    if not which(args.stopexec.split()[0]):
         exit('{} is not a valid executable!'.format(args.exec.split()[0]))
 if args.forking and not which('lsof'):
     exit('lsof is required for the port to process lookup function to work. Please install this.')
