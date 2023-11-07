@@ -105,11 +105,11 @@ if args.clientwaitmins == 0:
 if args.clientrefresh:
     # Need to just set a sane default if using the client refresh option, but won't be honored
     args.maxrunmins = 30; args.noclientexit = True
-if not path.isfile(args.exec):
-    exit('{} is not a valid executable!'.format(args.exec))
+if not path.isfile(args.exec.split()[0]):
+    exit('{} is not a valid executable!'.format(args.exec.split()[0]))
 if args.stopexec:
-    if not path.isfile(args.stopexec):
-        exit('{} is not a valid executable!'.format(args.exec))
+    if not path.isfile(args.stopexec.split()[0]):
+        exit('{} is not a valid executable!'.format(args.exec.split()[0]))
 if args.forking and not which('lsof'):
     exit('lsof is required for the port to process lookup function to work. Please install this.')
 if args.user:
@@ -139,6 +139,8 @@ def bindSocketTCP():
         activate = False
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # Allows rebinding to the same IP:PORT without being stuck in TIME_WAIT
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((args.listen, args.port))
             s.listen()
@@ -155,10 +157,10 @@ def bindSocketTCP():
 
             if not activate:
                 logPrint('info', 'Not activating socket as ip address is not in whitelist.')
-                s.close(); sleep(3); bindSocketTCP()
+                s.shutdown(); sleep(3); bindSocketTCP()
 
             if args.verbose: print('Closing socket on port {} to allow the executable to launch..'.format(args.port))
-            s.close(); sleep(3)
+            s.shutdown(socket.SHUT_RDWR); s.close(); sleep(3)
             p = callExec(); sleep(10)
             success = True
             starttime = time()
@@ -231,6 +233,8 @@ def bindSocketUDP():
         activate = False
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        # Allows rebinding to same IP:PORT
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((args.listen, args.port))
             data, addr = s.recvfrom(1024)
